@@ -6,6 +6,7 @@ import (
 	"files-uploader/config"
 	"files-uploader/internal/models"
 	"files-uploader/internal/repository"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"slices"
@@ -19,8 +20,6 @@ import (
 var validStatus = []string{
 	string(models.PendingStatus), string(models.Validating),
 }
-
-const MaxSize = 1 << 32 // 4,
 
 type FileServ struct {
 	repo          repository.FilesRepository
@@ -59,7 +58,7 @@ func (serv *FileServ) ProcessUpload(ctx context.Context, key string) error {
 	}
 
 	// validate that size in s3 and db are the ame
-	if *head.ContentLength != int64(file.SizeBites) || *head.ContentLength > MaxSize {
+	if *head.ContentLength != int64(file.SizeBites) || *head.ContentLength > models.MaxSize {
 		file.Reject("size mistmatch")
 		return serv.reject(ctx, file)
 	}
@@ -122,6 +121,41 @@ func (serv *FileServ) SaveFileMetadata(ctx context.Context, file *models.File) e
 	return nil
 }
 
+func (serv *FileServ) PresignMultipart(ctx context.Context, file *models.File) (*v4.PresignedHTTPRequest, time.Time, error) {
+
+	ttl := 1 * time.Hour
+	out, err := serv.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket:      aws.String(serv.bucket),
+		Key:         aws.String(file.ObjectKey),
+		ContentType: aws.String(file.ContentType),
+	})
+	if err != nil {
+		return nil, time.Now().Add(ttl), err
+	}
+	if out.UploadId == nil {
+		return nil, time.Now().Add(ttl), fmt.Errorf("S3 did not return an upload ID")
+	}
+	file.MultipartUploadID = out.UploadId
+	if err = serv.repo.Update(ctx, file); err != nil {
+		slog.Error("can not update multipart_upload_id", slog.Any("eror", err))
+		return nil, time.Now().Add(ttl), err
+	}
+	request, err := serv.presignClient.PresignUploadPart(
+		ctx,
+		&s3.UploadPartInput{
+			Bucket:     aws.String(serv.bucket),
+			Key:        aws.String(file.ObjectKey),
+			UploadId:   aws.String(*file.MultipartUploadID),
+			PartNumber: aws.Int32(int32(1)),
+		},
+		func(po *s3.PresignOptions) {
+			po.Expires = ttl
+		},
+	)
+	return request, time.Now().Add(ttl), err
+
+}
+
 func (serv *FileServ) PresignSingle(ctx context.Context, key, contentType string, size int) (*v4.PresignedHTTPRequest, time.Time, error) {
 	ttl := 15 * time.Minute
 	req, err := serv.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
@@ -131,4 +165,28 @@ func (serv *FileServ) PresignSingle(ctx context.Context, key, contentType string
 		ContentLength: aws.Int64(int64(size)),
 	}, s3.WithPresignExpires(ttl))
 	return req, time.Now().Add(ttl), err
+}
+
+func (serv *FileServ) FindFileByMultipartID(ctx context.Context, id string) (*models.File, error) {
+	return serv.repo.FindByUploadID(ctx, id)
+}
+
+func (serv *FileServ) PresignPartRange(ctx context.Context, key, s3UploadID string, nums []int) ([]*v4.PresignedHTTPRequest, time.Time, error) {
+	ttl := 1 * time.Hour
+	requests := make([]*v4.PresignedHTTPRequest, len(nums))
+	for idx, i := range nums {
+		request, err := serv.presignClient.PresignUploadPart(ctx, &s3.UploadPartInput{
+			Bucket:     aws.String(serv.bucket),
+			Key:        aws.String(key),
+			UploadId:   aws.String(s3UploadID),
+			PartNumber: aws.Int32(int32(i)),
+		})
+		if err != nil {
+			return nil, time.Now(), err
+		}
+		requests[idx] = request
+
+	}
+
+	return requests, time.Now().Add(ttl), nil
 }

@@ -36,3 +36,12 @@ func (repo *sqlLiteRepo) FindByKey(ctx context.Context, key string) (*models.Fil
 	}
 	return file, nil
 }
+
+func (repo *sqlLiteRepo) FindByUploadID(ctx context.Context, uploadID string) (*models.File, error) {
+	file := new(models.File)
+	err := repo.db.NewSelect().Model(file).Where(" multipart_upload_id = ?", uploadID).Scan(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}

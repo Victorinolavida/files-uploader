@@ -10,4 +10,5 @@ type FilesRepository interface {
 	FindByKey(ctx context.Context, key string) (*models.File, error)
 	Delete()
 	Update(cxt context.Context, f *models.File) error
+	FindByUploadID(ctx context.Context, uploadID string) (*models.File, error)
 }

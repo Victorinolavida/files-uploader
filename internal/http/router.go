@@ -2,9 +2,11 @@ package http
 
 import (
 	"encoding/json"
+	"files-uploader/internal/dto"
 	"files-uploader/internal/models"
 	"files-uploader/internal/service"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -17,10 +19,6 @@ type Router struct {
 	render func(http.ResponseWriter, any)
 	serv   service.FileService
 }
-
-const (
-	MaxSize = 1 << 32 // 4,
-)
 
 var AllowedContentTypes = []string{
 	"image/jpeg",
@@ -50,9 +48,16 @@ func NewRouter(render func(http.ResponseWriter, any), serv service.FileService) 
 	r := &Router{render, serv}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", notFound)
 	mux.HandleFunc("/home", r.Home)
 	mux.HandleFunc("POST /uploads", r.Uploads)
+	mux.HandleFunc("POST /uploads/{id}/parts", r.UploadParts)
 	return mux
+}
+
+func notFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	SendError(w, "not found", http.StatusNotFound)
 }
 
 func (r *Router) Home(w http.ResponseWriter, _ *http.Request) {
@@ -70,14 +75,6 @@ type FileMetadata struct {
 	SizeBites   int    `json:"size_bytes"`
 }
 
-type FileUploadResponse struct {
-	UploadID  string         `json:"upload_id"`
-	URL       string         `json:"url"`
-	Method    string         `json:"method"`
-	Headers   map[string]any `json:"headers"`
-	ExpiresAt string         `json:"expires_at"`
-}
-
 var HardcodedUser = uuid.MustParse("a5f18e36-d915-43cb-935d-cfdbcd37e62b")
 
 func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
@@ -89,68 +86,219 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 
 	err := decoder.Decode(fileMetadata)
 	if err != nil {
+		if err == io.EOF {
+			SendError(w, "body empty", http.StatusBadRequest)
+			return
+		}
 		slog.Error("error decoding body", slog.Any("error", err))
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if fileMetadata.FileName == "" {
 		slog.Warn("file name is empty")
-		http.Error(w, "file name is empty", http.StatusBadRequest)
+		SendError(w, "file name is empty", http.StatusBadRequest)
 		return
 	}
 
-	if fileMetadata.SizeBites <= 0 || fileMetadata.SizeBites > MaxSize {
+	if fileMetadata.SizeBites <= 0 || fileMetadata.SizeBites > models.MaxSize {
 		slog.Warn("file size is invalid")
-		http.Error(w, "file size is invalid, have size 0 or pass 4GB", http.StatusBadRequest)
+		SendError(w, "file size is invalid, have size 0 or pass 4GB", http.StatusBadRequest)
 		return
 	}
 
 	if !slices.Contains(AllowedContentTypes, fileMetadata.ContentType) {
 		msg := fmt.Sprintf("invalid content_type: %s", fileMetadata.ContentType)
 		slog.Warn("content_type not allowed", slog.Any("error", msg))
-		http.Error(w, msg, http.StatusBadRequest)
+		SendError(w, msg, http.StatusBadRequest)
 		return
 	}
 
-	file := models.NewFile(
+	file, err := models.NewFile(
 		HardcodedUser,
 		fileMetadata.FileName,
 		fileMetadata.ContentType,
 		fileMetadata.SizeBites,
 	)
+	if err != nil {
+		slog.Error("invalid data", slog.Any("error", err))
+		SendError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	err = r.serv.SaveFileMetadata(re.Context(), file)
 	if err != nil {
 		slog.Error("saving file", slog.Any("error", err))
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	slog.Info("success save metadata")
 
-	request, ttl, err := r.serv.PresignSingle(
-		re.Context(), file.ObjectKey, file.ContentType, file.SizeBites,
-	)
-	if err != nil {
-		slog.Error("presigning file", slog.Any("error", err))
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	slog.Info("handle presign file", slog.String("mode", file.Mode))
+	if file.Mode == string(models.SinglePart) {
+		out, ttl, err := r.serv.PresignSingle(re.Context(), file.ObjectKey, file.ContentType, file.SizeBites)
+		if err != nil {
+			slog.Error("presign file", slog.Any("error", err))
+			SendError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		response := dto.FileSingleUploadResponse{
+			CommonFileResponse: dto.CommonFileResponse{
+				UploadID:  file.ID.String(),
+				ExpiresAt: ttl.String(),
+				Mode:      file.Mode,
+			},
+			Method: out.Method,
+			URL:    out.URL,
+			Headers: map[string]any{
+				"Content-Type": file.ContentType,
+			},
+		}
+		resBytes, err := json.Marshal(response)
+		if err != nil {
+			slog.Error("marshaling file", slog.Any("error", err))
+			SendError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		w.Write(resBytes)
 		return
 	}
 
-	slog.Info("success presigning file")
-	response := FileUploadResponse{
-		UploadID: file.ID.String(),
-		URL:      request.URL,
-		Method:   request.Method,
-		Headers: map[string]any{
-			"Content-Type": file.ContentType,
+	out, ttl, err := r.serv.PresignMultipart(
+		re.Context(), file,
+	)
+
+	if err != nil {
+		slog.Error("presigning multipart file", slog.Any("error", err))
+		SendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	response := dto.FileMultipleUploadResponse{
+		CommonFileResponse: dto.CommonFileResponse{
+			ExpiresAt: ttl.String(),
+			Mode:      file.Mode,
+			UploadID:  *file.MultipartUploadID,
 		},
-		ExpiresAt: ttl.String(),
+		PartCount: file.PartCount,
+		PartSize:  file.PartSize,
+		Parts: []dto.FileMultipleUploadPart{
+			dto.FileMultipleUploadPart{
+				PartNumber: 1,
+				Method:     out.Method,
+				URL:        out.URL,
+				Headers: map[string]any{
+					"Content-Type": file.ContentType,
+				},
+			},
+		},
 	}
 	resBytes, err := json.Marshal(response)
 	if err != nil {
 		slog.Error("marshaling file", slog.Any("error", err))
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Write(resBytes)
+}
+
+func SendError(w http.ResponseWriter, message string, status int) {
+	w.WriteHeader(status)
+	errorBody := map[string]any{
+		"message": message,
+	}
+	response, _ := json.Marshal(errorBody)
+	w.Write(response)
+}
+
+func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
+	uploadID := re.PathValue("id")
+	if uploadID == "" {
+		SendError(w, "upload_id must be not empty", http.StatusBadRequest)
+		return
+	}
+
+	body := new(dto.FilePartsRequest)
+	decoder := json.NewDecoder(re.Body)
+	err := decoder.Decode(body)
+	defer re.Body.Close()
+	if err != nil {
+		if err == io.EOF {
+			SendError(w, "body empty", http.StatusBadRequest)
+			return
+		}
+		slog.Error("error decoding body", slog.Any("error", err))
+		SendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if len(body.PartNumbers) == 0 {
+		SendError(w, "part_numbers is empty", http.StatusBadRequest)
+		return
+	}
+	if len(body.PartNumbers) > 10 {
+		SendError(w, "part_numbers is too big", http.StatusBadRequest)
+		return
+	}
+	seen := make(map[int]bool, len(body.PartNumbers))
+	for _, n := range body.PartNumbers {
+		if n < 1 || seen[n] {
+			SendError(w, "invalid part number", http.StatusBadRequest)
+			return
+		}
+		seen[n] = true
+	}
+
+	file, err := r.serv.FindFileByMultipartID(re.Context(), uploadID)
+	if err != nil {
+		SendError(w, "file not found", http.StatusBadRequest)
+		return
+	}
+	if file.Mode != string(models.MultiPart) || file.MultipartUploadID == nil || file.PartCount == 0 {
+		slog.Error("file is an invalid to use this endpoint", slog.Any("id", file.ID.String()))
+		SendError(w, "file not found", http.StatusConflict)
+		return
+	}
+
+	if file.Status != string(models.PendingStatus) {
+		slog.Error("file is an invalid status",
+			slog.Any("id", file.ID.String()),
+			slog.Any("status", file.Status),
+		)
+		SendError(w, "file is already processed", http.StatusConflict)
+		return
+	}
+	for _, n := range body.PartNumbers {
+		if n > file.PartCount {
+			slog.Error("invalid part number, args is bigger thatn part_count")
+			SendError(w, "invalid part number", http.StatusBadRequest)
+			return
+		}
+	}
+
+	output, ttl, err := r.serv.PresignPartRange(re.Context(), file.ObjectKey, *file.MultipartUploadID, body.PartNumbers)
+	if err != nil {
+		slog.Error("error presigned parts", slog.Any("error", err))
+		SendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	response := dto.FilePartsResponse{
+		ExpiresAt: ttl.String(),
+	}
+	parts := make([]dto.FilePartResponse, len(output))
+	for idx, o := range output {
+		parts[idx] = dto.FilePartResponse{
+			PartNumber: body.PartNumbers[idx],
+			URL:        o.URL,
+		}
+	}
+	response.Parts = parts
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		slog.Error("marshaling reponsee ", slog.Any("error", err))
+		SendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(responseBytes)
 }

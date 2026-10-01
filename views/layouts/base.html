@@ -29,51 +29,119 @@
         const $btn = document.getElementById("submit-btn");
         const $form = document.getElementById("form-upload");
 
+        const BACKEND_URL = "http://localhost:3000";
+        const token = "";
+        const CONCURRENCY = 4;
+        const MAX_RETRIES = 3;
+
+        async function api(path, body) {
+            const res = await fetch(BACKEND_URL + path, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+
+            if (!res.ok) throw new Error(data.message || `request failed (${res.status})`);
+            return data;
+        }
+
+        async function handleUpload(file) {
+            const init = await api("/uploads", {
+                file_name: file.name,
+                size_bytes: file.size,
+                content_type: file.type,
+            });
+
+            if (init.mode === "single") {
+                const put = await fetch(init.url, {
+                    method: init.method,
+                    headers: init.headers,
+                    body: file,
+                });
+                if (!put.ok) throw new Error("upload failed");
+                return init.upload_id;
+            }
+
+            if (init.mode === "multipart") {
+                await uploadMultipart(file, init);
+                return init.upload_id;
+            }
+
+            throw new Error("unknown upload mode");
+        }
+
+        async function uploadMultipart(file, {upload_id, part_size, part_count, parts}) {
+            const urls = new Map(parts.map((p) => [p.part_number, p.url]));
+            const etags = new Map();
+            const queue = Array.from({length: part_count}, (_, i) => i + 1);
+
+            async function getUrl(n) {
+                if (!urls.has(n)) {
+                    const batch = [];
+                    for (let i = n; i < n + 5 && i <= part_count; i++)
+                        if (!urls.has(i)) batch.push(i);
+                    const res = await api(`/uploads/${upload_id}/parts`, {
+                        part_numbers: batch,
+                    });
+                    res.parts.forEach((p) => urls.set(p.part_number, p.url));
+                }
+                return urls.get(n);
+            }
+
+            async function uploadPart(n) {
+                const slice = file.slice(
+                    (n - 1) * part_size,
+                    Math.min(n * part_size, file.size),
+                );
+
+                for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                    const url = await getUrl(n);
+                    try {
+                        const res = await fetch(url, {method: "PUT", body: slice});
+                        if (res.ok) {
+                            etags.set(n, res.headers.get("ETag"));
+                            return;
+                        }
+                        if (res.status === 403) urls.delete(n);
+                    } catch {
+                        // network error, retry
+                    }
+                }
+                throw new Error(`part ${n} failed`);
+            }
+
+            async function worker() {
+                while (queue.length) {
+                    const n = queue.shift();
+                    await uploadPart(n);
+                }
+            }
+
+            await Promise.all(Array.from({length: CONCURRENCY}, worker));
+
+            await api(`/uploads/${upload_id}/complete`, {
+                parts: [...etags]
+                    .map(([part_number, etag]) => ({part_number, etag}))
+                    .sort((a, b) => a.part_number - b.part_number),
+            });
+        }
+
         $form.addEventListener("submit", async (e) => {
             e.preventDefault();
             $btn.disabled = true;
-            for await (const file of $documents.files) {
+            for (const file of $documents.files) {
                 try {
-                    console.log(file)
-                    const result = await handlepresigneFile(file.name, file.size, file.type);
-                    await handleUpload(result.upload_id, result.url, result.method, result.headers, file)
-                } catch (e) {
-                    alert(e)
+                    await handleUpload(file);
+                } catch (err) {
+                    alert(err);
                 }
             }
             $btn.disabled = false;
         });
-
-        const BACKEND_URL = "http://localhost:3000";
-
-        const handlepresigneFile = async function (name, size, type) {
-            const request = await fetch(BACKEND_URL + "/uploads", {
-                method: "POST",
-                body: JSON.stringify({
-                    file_name: name,
-                    size_bytes: size,
-                    content_type: type,
-                }),
-            });
-
-            console.log(request.status)
-
-            if (request.status !== 200) {
-                throw new Error(await request.text());
-            }
-
-            const {upload_id, url, method, headers} = await request.json();
-            return {upload_id, url, method, headers}
-        };
-
-        const handleUpload = async function (upload_id, url, method, headers, file) {
-            const put = await fetch(url, {method, headers, body: file});
-            if (!put.ok) {
-                console.log(await put.text())
-                throw new Error("upload failed");
-            }
-        }
-
     </script>
 </body>
 
