@@ -68,7 +68,10 @@
 
         const handleUpload = async function (upload_id, url, method, headers, file) {
             const put = await fetch(url, {method, headers, body: file});
-            if (!put.ok) throw new Error("upload failed");
+            if (!put.ok) {
+                console.log(await put.text())
+                throw new Error("upload failed");
+            }
         }
 
     </script>

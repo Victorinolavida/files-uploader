@@ -125,7 +125,7 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	slog.Info("success save metadata...")
+	slog.Info("success save metadata")
 
 	request, ttl, err := r.serv.PresignSingle(
 		re.Context(), file.ObjectKey, file.ContentType, file.SizeBites,
@@ -134,7 +134,6 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 		slog.Error("presigning file", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
-
 	}
 
 	slog.Info("success presigning file")
