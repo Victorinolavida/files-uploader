@@ -1,28 +1,21 @@
 package http
 
 import (
-	"context"
 	"encoding/json"
 	"files-uploader/internal/models"
-	"files-uploader/internal/repository"
+	"files-uploader/internal/service"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
 	"time"
 
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/google/uuid"
 )
 
-type Presigner interface {
-	PresignSingle(ctx context.Context, key, contentType string, size int) (*v4.PresignedHTTPRequest, time.Time, error)
-}
-
 type Router struct {
-	render   func(http.ResponseWriter, any)
-	repo     repository.FilesRepository
-	presiger Presigner
+	render func(http.ResponseWriter, any)
+	serv   service.FileService
 }
 
 const (
@@ -53,8 +46,8 @@ var AllowedContentTypes = []string{
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
-func NewRouter(render func(http.ResponseWriter, any), repo repository.FilesRepository, presigner Presigner) http.Handler {
-	r := &Router{render, repo, presigner}
+func NewRouter(render func(http.ResponseWriter, any), serv service.FileService) http.Handler {
+	r := &Router{render, serv}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/home", r.Home)
@@ -84,18 +77,6 @@ type FileUploadResponse struct {
 	Headers   map[string]any `json:"headers"`
 	ExpiresAt string         `json:"expires_at"`
 }
-
-// {
-//   "uploadId": "7f3c9a2e-...",
-//   "mode": "single",
-//   "url": "https://bucket.s3.amazonaws.com/quarantine/user123/7f3c...?X-Amz-Signature=...",
-//   "method": "PUT",
-//   "headers": {
-//     "Content-Type": "image/png"
-//   },
-//   "expiresAt": "2026-09-30T15:30:00Z"
-// }
-// }
 
 var HardcodedUser = uuid.MustParse("a5f18e36-d915-43cb-935d-cfdbcd37e62b")
 
@@ -138,17 +119,17 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 		fileMetadata.ContentType,
 		fileMetadata.SizeBites,
 	)
-	err = r.repo.Save(re.Context(), file)
+	err = r.serv.SaveFileMetadata(re.Context(), file)
 	if err != nil {
 		slog.Error("saving file", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-
 	slog.Info("success save metadata...")
 
-	request, ttl, err := r.presiger.
-		PresignSingle(re.Context(), file.ObjectKey, file.ContentType, file.SizeBites)
+	request, ttl, err := r.serv.PresignSingle(
+		re.Context(), file.ObjectKey, file.ContentType, file.SizeBites,
+	)
 	if err != nil {
 		slog.Error("presigning file", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -157,7 +138,6 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 	}
 
 	slog.Info("success presigning file")
-
 	response := FileUploadResponse{
 		UploadID: file.ID.String(),
 		URL:      request.URL,

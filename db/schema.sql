@@ -10,9 +10,10 @@ CREATE TABLE files (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at DATETIME
-);
+, reject_reason text);
 CREATE INDEX idx_files_user_id ON files(user_id);
 CREATE INDEX idx_files_status ON files(status);
 -- Dbmate schema migrations
 INSERT INTO "schema_migrations" (version) VALUES
-  ('20261001032214');
+  ('20261001032214'),
+  ('20261001144357');

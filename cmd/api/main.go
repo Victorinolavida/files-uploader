@@ -2,18 +2,18 @@ package main
 
 import (
 	"context"
+	"files-uploader/config"
 	"files-uploader/internal/db"
-	routerFU "files-uploader/internal/http"
+	appRouter "files-uploader/internal/http"
 	"files-uploader/internal/repository"
+	"files-uploader/internal/service"
 	"files-uploader/internal/storage"
+	"files-uploader/pkg/logger"
+	"fmt"
+	"log"
 	"log/slog"
 	"net/http"
-	"os"
 	"text/template"
-
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 func render(w http.ResponseWriter, data any) {
@@ -26,43 +26,37 @@ func render(w http.ResponseWriter, data any) {
 }
 
 func main() {
-	mux := http.NewServeMux()
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-	slog.SetDefault(log)
 
-	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("us-east-1"),
-		config.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(
-				"minioadmin",
-				"minioadmin",
-				"",
-			),
-		))
+	appConfig, err := config.Load()
+	if err != nil {
+		log.Panicf("error loading config")
+	}
+
+	log := logger.NewLogger(appConfig.AppEnv)
+	cfg, err := storage.LoadConfig(context.Background(), appConfig.AppEnv, appConfig.BucketConfig)
 
 	if err != nil {
-		slog.Error("unable to load SDK config", slog.Any("error", err))
+		log.Error("unable to load SDK config", slog.Any("error", err))
 		panic(1)
 	}
 
-	objStorage, err := storage.NewObjectStorate(context.TODO(), cfg)
+	objStorage, err := storage.NewObjectStorate(context.TODO(), cfg, appConfig.BucketConfig)
 	if err != nil {
-		slog.Error("unable to connect to bucket", slog.Any("error", err))
+		log.Error("unable to connect to bucket", slog.Any("error", err))
 		panic(1)
 	}
-
-	presigner := s3.NewPresignClient(objStorage)
-	service := storage.NewServiceStorate(presigner)
 
 	db := db.NewDB()
 	repo := repository.NewSqlRepo(db)
 
-	handler := routerFU.NewRouter(render, repo, service)
+	mux := http.NewServeMux()
+
+	fileService := service.NewFileServices(repo, objStorage, appConfig.BucketConfig)
+	handler := appRouter.NewRouter(render, fileService)
 	mux.Handle("/", handler)
 
-	slog.Info("starting server on 3000")
-	if err := http.ListenAndServe("localhost:3000", mux); err != nil {
+	log.Info("starting server", slog.Int("port", appConfig.Port))
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", appConfig.Port), mux); err != nil {
 		log.Error("error starting server", slog.Any("error", err))
 		panic(1)
 	}

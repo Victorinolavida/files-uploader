@@ -14,7 +14,7 @@ const (
 	PendingStatus FileStatus = FileStatus("pending")
 	Uploaded      FileStatus = FileStatus("uploaded")
 	Validating    FileStatus = FileStatus("validating")
-	Cancelled     FileStatus = FileStatus("cancelled")
+	Rejected      FileStatus = FileStatus("rejected")
 )
 
 type File struct {
@@ -29,6 +29,7 @@ type File struct {
 	CreatedAt     time.Time `bun:"created_at"`
 	UpdatedAt     time.Time `bun:"updated_at"`
 	DeletedAt     time.Time `bun:"deleted_at"`
+	RejectReason  string    `bun:"reject_reason"`
 }
 
 func NewFile(
@@ -59,8 +60,17 @@ func (f *File) generateObjectKey() {
 func (f *File) SetAsUploaded() {
 	f.Status = string(Uploaded)
 	f.UpdatedAt = time.Now()
+	f.GenerateFinalKey()
 }
 
 func (f *File) GenerateFinalKey() {
 	f.ObjectKey = fmt.Sprintf("files/%s/%s", f.UserID, f.ID)
+}
+
+func (f *File) Reject(reason string) {
+	now := time.Now()
+	f.RejectReason = reason
+	f.DeletedAt = now
+	f.UpdatedAt = now
+	f.Status = string(Rejected)
 }
