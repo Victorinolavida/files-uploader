@@ -52,6 +52,7 @@ func NewRouter(render func(http.ResponseWriter, any), serv service.FileService) 
 	mux.HandleFunc("/home", r.Home)
 	mux.HandleFunc("POST /uploads", r.Uploads)
 	mux.HandleFunc("POST /uploads/{id}/parts", r.UploadParts)
+	mux.HandleFunc("POST /uploads/{id}/complete", r.FileComplete)
 	return mux
 }
 
@@ -301,4 +302,90 @@ func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write(responseBytes)
+}
+
+func (r *Router) FileComplete(w http.ResponseWriter, re *http.Request) {
+	uploadID := re.PathValue("id")
+	if uploadID == "" {
+		SendError(w, "upload_id must be not empty", http.StatusBadRequest)
+		return
+	}
+	file, err := r.serv.FindFileByMultipartID(re.Context(), uploadID)
+	if err != nil {
+		SendError(w, "file not found", http.StatusBadRequest)
+		return
+	}
+
+	if file.Mode != string(models.MultiPart) || file.MultipartUploadID == nil || file.PartCount == 0 {
+		slog.Error("file is an invalid to use this endpoint", slog.Any("id", file.ID.String()))
+		SendError(w, "file not found", http.StatusConflict)
+		return
+	}
+
+	parts, err := r.serv.ListAllParts(re.Context(), file.ObjectKey, *file.MultipartUploadID)
+	if err != nil {
+		slog.Error("can not list parts", slog.Any("id", file.ID.String()))
+		SendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if len(parts.Parts) != file.PartCount {
+		SendError(w, "number of parts not match", http.StatusConflict)
+		return
+	}
+	size := 0
+	partNumbers := make([]int, 0)
+	for _, part := range parts.Parts {
+		size += int(*part.Size)
+		partNumbers = append(partNumbers, int(*part.PartNumber))
+	}
+	if !isConsecutive(partNumbers) {
+		SendError(w, "some part is missing", http.StatusConflict)
+		return
+	}
+	if size != file.SizeBites {
+		SendError(w, "file size and sum part file size does not match", http.StatusConflict)
+		return
+	}
+
+	err = r.serv.CompleteFileUpload(re.Context(), file, parts)
+	if err != nil {
+		slog.Error("can not complete file upload", slog.Any("error", err))
+		SendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	res := dto.FileCompletedResponse{
+		UploadID: *file.MultipartUploadID,
+		Status:   "completing",
+	}
+
+	resBytes, _ := json.Marshal(res)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(resBytes)
+
+}
+
+func isConsecutive(nums []int) bool {
+	if len(nums) <= 1 {
+		return true
+	}
+	seen := make(map[int]bool)
+	minNum := nums[0]
+	maxNum := nums[0]
+
+	for _, num := range nums {
+		if seen[num] { // duplicated
+			return false
+		}
+		seen[num] = true
+		if num < minNum {
+			minNum = num
+		}
+		if num > maxNum {
+			maxNum = num
+		}
+
+	}
+	return maxNum-minNum == len(nums)-1
 }

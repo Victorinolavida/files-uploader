@@ -15,10 +15,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 var validStatus = []string{
 	string(models.PendingStatus), string(models.Validating),
+}
+
+var validStatusMultipart = []string{
+	string(models.PendingStatus), string(models.Validating), string(models.UploadingStatus),
 }
 
 type FileServ struct {
@@ -45,7 +50,11 @@ func (serv *FileServ) ProcessUpload(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	if !slices.Contains(validStatus, file.Status) {
+	if file.Mode == string(models.SinglePart) && !slices.Contains(validStatus, file.Status) {
+		return errors.New("file is already processed or rejected")
+	}
+
+	if file.Mode == string(models.MultiPart) && !slices.Contains(validStatusMultipart, file.Status) {
 		return errors.New("file is already processed or rejected")
 	}
 
@@ -180,7 +189,7 @@ func (serv *FileServ) PresignPartRange(ctx context.Context, key, s3UploadID stri
 			Key:        aws.String(key),
 			UploadId:   aws.String(s3UploadID),
 			PartNumber: aws.Int32(int32(i)),
-		})
+		}, s3.WithPresignExpires(ttl))
 		if err != nil {
 			return nil, time.Now(), err
 		}
@@ -189,4 +198,38 @@ func (serv *FileServ) PresignPartRange(ctx context.Context, key, s3UploadID stri
 	}
 
 	return requests, time.Now().Add(ttl), nil
+}
+
+func (serv *FileServ) ListAllParts(ctx context.Context, key, uploadID string) (*s3.ListPartsOutput, error) {
+	return serv.client.ListParts(ctx, &s3.ListPartsInput{
+		Bucket:   aws.String(serv.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+	})
+
+}
+
+func (serv *FileServ) CompleteFileUpload(ctx context.Context, file *models.File, parst *s3.ListPartsOutput) error {
+	if err := file.SetAsUploading(); err != nil {
+		return err
+	}
+	if err := serv.repo.Update(ctx, file); err != nil {
+		return err
+	}
+
+	completed := make([]types.CompletedPart, 0, len(parst.Parts))
+	for _, p := range parst.Parts {
+		completed = append(completed, types.CompletedPart{
+			PartNumber: p.PartNumber,
+			ETag:       p.ETag,
+		})
+	}
+	_, err := serv.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:          aws.String(serv.bucket),
+		Key:             aws.String(file.ObjectKey),
+		UploadId:        aws.String(*file.MultipartUploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: completed},
+	})
+
+	return err
 }

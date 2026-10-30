@@ -6,6 +6,7 @@ import (
 	"time"
 
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type FileService interface {
@@ -15,4 +16,6 @@ type FileService interface {
 	PresignMultipart(ctx context.Context, file *models.File) (*v4.PresignedHTTPRequest, time.Time, error)
 	FindFileByMultipartID(ctx context.Context, id string) (*models.File, error)
 	PresignPartRange(ctx context.Context, key, s3UploadID string, nums []int) ([]*v4.PresignedHTTPRequest, time.Time, error)
+	ListAllParts(ctx context.Context, key, uploadID string) (*s3.ListPartsOutput, error)
+	CompleteFileUpload(context.Context, *models.File, *s3.ListPartsOutput) error
 }

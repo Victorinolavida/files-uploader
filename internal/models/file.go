@@ -20,10 +20,11 @@ type FileStatus string
 type UploadMode string
 
 const (
-	PendingStatus FileStatus = FileStatus("pending")
-	Uploaded      FileStatus = FileStatus("uploaded")
-	Validating    FileStatus = FileStatus("validating")
-	Rejected      FileStatus = FileStatus("rejected")
+	PendingStatus   FileStatus = FileStatus("pending")
+	Uploaded        FileStatus = FileStatus("uploaded")
+	UploadingStatus FileStatus = FileStatus("uploading")
+	Validating      FileStatus = FileStatus("validating")
+	Rejected        FileStatus = FileStatus("rejected")
 
 	SinglePart UploadMode = UploadMode("single")
 	MultiPart  UploadMode = UploadMode("multipart")
@@ -106,4 +107,13 @@ func (f *File) Reject(reason string) {
 	f.DeletedAt = now
 	f.UpdatedAt = now
 	f.Status = string(Rejected)
+}
+
+func (f *File) SetAsUploading() error {
+	if f.Status != string(PendingStatus) {
+		return errors.New("can not pass to uploading status")
+	}
+	f.Status = string(UploadingStatus)
+	f.UpdatedAt = time.Now()
+	return nil
 }
