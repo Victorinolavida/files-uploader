@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ type Config struct {
 	AppEnv      string
 	DatabaseURL string
 	Port        int
+	RedisAddr   string
 	BucketConfig
 }
 
@@ -26,11 +28,13 @@ type BucketConfig struct {
 }
 
 const (
-	defaultPort   = 8000
-	defaultBucket = "test"
-	defaultRegion = "us-east-1"
-	localUser     = "minioadmin"
-	localPassword = "minioadmin"
+	defaultPort    = 8000
+	defaultBucket  = "test"
+	defaultRegion  = "us-east-1"
+	localUser      = "minioadmin"
+	localPassword  = "minioadmin"
+	localRedisHost = "localhost"
+	localRedisPort = "6379"
 )
 
 func Load() (*Config, error) {
@@ -44,6 +48,8 @@ func Load() (*Config, error) {
 	bucket := os.Getenv("S3_BUCKET")
 	region := os.Getenv("AWS_REGION")
 	awsS3Url := os.Getenv("AWS_S3_URL")
+	redistHost := os.Getenv("REDIST_HOST")
+	redistPort := os.Getenv("REDIST_PORT")
 
 	portInt, err := strconv.Atoi(port)
 	if err != nil {
@@ -57,6 +63,13 @@ func Load() (*Config, error) {
 		bucket = defaultBucket
 	}
 
+	if redistHost == "" {
+		redistHost = localRedisHost
+	}
+	if redistPort == "" {
+		redistPort = localRedisPort
+	}
+
 	bucketConfig := BucketConfig{
 		Bucket: bucket,
 		Region: region,
@@ -67,10 +80,13 @@ func Load() (*Config, error) {
 		bucketConfig.URL = awsS3Url
 	}
 
+	redisAddr := net.JoinHostPort(redistHost, redistPort)
+
 	return &Config{
 		AppEnv:       appEnv,
 		DatabaseURL:  databaseURL,
 		Port:         portInt,
 		BucketConfig: bucketConfig,
+		RedisAddr:    redisAddr,
 	}, nil
 }

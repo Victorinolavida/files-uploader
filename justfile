@@ -8,3 +8,9 @@ db-up:
 
 db-down:
     dbmate down
+
+api:
+    go run ./cmd/api
+
+worker:
+    go run ./cmd/worker

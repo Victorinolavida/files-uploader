@@ -1,7 +1,6 @@
 package logger
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -18,7 +17,6 @@ func NewLogger(env string) *slog.Logger {
 			Level: slog.LevelDebug,
 		})
 	}
-	fmt.Printf("handler %v\n", handler)
 	log := slog.New(handler)
 	slog.SetDefault(log)
 	return log
