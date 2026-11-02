@@ -436,6 +436,13 @@
         text-decoration: none;
       }
 
+      .file-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: none;
+      }
+
       footer {
         padding: 24px 16px;
         text-align: center;
@@ -628,6 +635,7 @@
       const CSRF_COOKIE = "{{.CSRFCookieName}}";
       const CONCURRENCY = 4;
       const MAX_RETRIES = 3;
+      const UPLOADED_HIDE_DELAY = 2000;
 
       const filesState = new Map();
       const remoteIds = new Set();
@@ -816,7 +824,8 @@
       function updateFileUI(file) {
         const state = getState(file);
         if (!state.refs) return;
-        const { bar, status } = state.refs;
+        const { bar, progressEl, status } = state.refs;
+        progressEl.hidden = state.status !== "uploading";
         bar.style.width = `${Math.round(state.progress * 100)}%`;
         bar.className = `progress-bar ${state.status}`;
         status.className = `file-status ${state.status}`;
@@ -849,7 +858,7 @@
                             <span class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
                             <span class="file-size">${formatSize(file.size)}</span>
                         </div>
-                        <div class="progress"><div class="progress-bar ${state.status}"></div></div>
+                        <div class="progress" ${state.status !== "uploading" ? "hidden" : ""}><div class="progress-bar ${state.status}"></div></div>
                         <div class="file-status ${state.status}">${statusText(state)}</div>
                     </div>
                     <button type="button" class="remove-btn" data-index="${index}" aria-label="Remove file">&times;</button>
@@ -858,6 +867,7 @@
           bar.style.width = `${Math.round(state.progress * 100)}%`;
           state.refs = {
             bar,
+            progressEl: item.querySelector(".progress"),
             status: item.querySelector(".file-status"),
           };
           $list.appendChild(item);
@@ -921,7 +931,10 @@
                             <span class="file-size">${formatSize(file.size)}</span>
                         </div>
                     </div>
-                    <a class="btn btn-primary download" href="${escapeHtml(file.download_url)}" target="_blank" rel="noopener">Download</a>
+                    <div class="file-actions">
+                        <a class="btn btn-primary download" href="${escapeHtml(file.download_url)}" target="_blank" rel="noopener">Download</a>
+                        <button type="button" class="remove-btn delete-remote" data-id="${escapeHtml(file.id)}" aria-label="Delete ${escapeHtml(file.name)}">&times;</button>
+                    </div>
                 `;
         return item;
       }
@@ -997,6 +1010,38 @@
 
       $refresh.addEventListener("click", loadFiles);
 
+      $remoteList.addEventListener("click", async (event) => {
+        const button = event.target.closest(".delete-remote");
+        if (!button) return;
+
+        const id = button.dataset.id;
+        if (!id || !window.confirm("Delete this file permanently?")) return;
+
+        button.disabled = true;
+        try {
+          const res = await fetch(`${BACKEND_URL}/uploads/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+            credentials: "include",
+            headers: { "X-CSRF-Token": csrfToken() },
+          });
+          if (res.status === 401) {
+            window.location.href = "/register";
+            return;
+          }
+          if (!res.ok) throw new Error("delete failed");
+
+          remoteIds.delete(id);
+          button.closest(".file-item")?.remove();
+          if (remoteIds.size === 0) {
+            $remoteEmpty.hidden = false;
+            $remoteEmpty.textContent = "No uploaded files yet.";
+          }
+        } catch {
+          button.disabled = false;
+          window.alert("Unable to delete file.");
+        }
+      });
+
       function setFiles(files) {
         const transfer = new DataTransfer();
         files.forEach((file) => transfer.items.add(file));
@@ -1065,6 +1110,13 @@
             });
             state.status = "done";
             state.progress = 1;
+            updateFileUI(file);
+            setTimeout(() => {
+              const current = Array.from($input.files || []);
+              if (!current.includes(file)) return;
+              setFiles(current.filter((f) => f !== file));
+            }, UPLOADED_HIDE_DELAY);
+            continue;
           } catch (err) {
             state.status = "error";
             state.error = err?.message || String(err);
