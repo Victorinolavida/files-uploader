@@ -26,8 +26,9 @@ type FileService interface {
 }
 
 type UserService interface {
-	CreateUser(context.Context, *models.User) error
-	GetUserByEmail(context.Context, string) (*models.User, error)
+	LoginUser(context.Context, string, string) (*models.User, string, error)
+	RegisterUser(context.Context, *models.User) (string, error)
+	GetUser(context.Context, uuid.UUID) (*models.User, error)
 }
 
 type JwtService interface {

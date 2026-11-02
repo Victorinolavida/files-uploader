@@ -1,0 +1,64 @@
+{{define "auth-content"}}
+<h1>Create an account</h1>
+<p class="sub">Sign up to start uploading your files.</p>
+
+<form id="register-form" class="auth-form" novalidate>
+    <label class="field">
+        <span>Name</span>
+        <input type="text" name="name" autocomplete="name" placeholder="Ada Lovelace" required />
+    </label>
+
+    <label class="field">
+        <span>Email</span>
+        <input type="email" name="email" autocomplete="email" placeholder="you@example.com" required />
+    </label>
+
+    <label class="field">
+        <span>Password</span>
+        <input type="password" name="password" autocomplete="new-password" placeholder="At least 4 characters"
+            required />
+    </label>
+
+    <p id="form-error" class="form-error" hidden></p>
+
+    <button type="submit" class="btn-primary">Create account</button>
+</form>
+
+<p class="switch">Already have an account? <a href="/login">Log in</a></p>
+
+<script>
+    const form = document.getElementById("register-form");
+    const error = document.getElementById("form-error");
+    const button = form.querySelector("button[type=submit]");
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        error.hidden = true;
+        button.disabled = true;
+
+        try {
+            const res = await fetch("/users/register", {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: form.name.value.trim(),
+                    email: form.email.value.trim(),
+                    password: form.password.value,
+                }),
+            });
+
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.message || "Unable to create account");
+            }
+
+            window.location.href = "/home";
+        } catch (err) {
+            error.textContent = err.message;
+            error.hidden = false;
+            button.disabled = false;
+        }
+    });
+</script>
+{{end}}

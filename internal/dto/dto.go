@@ -64,8 +64,18 @@ type FileListItem struct {
 	DownloadURL string    `json:"download_url"`
 }
 
+type RegisterRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Name     string `json:"name"`
+}
+
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
-	Name     string `json:"password"`
+}
+
+type UserLogResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }

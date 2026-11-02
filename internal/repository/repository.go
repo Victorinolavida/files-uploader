@@ -20,4 +20,6 @@ type FilesRepository interface {
 type UserRepository interface {
 	Save(context.Context, *models.User) error
 	GetByEmail(context.Context, string) (*models.User, error)
+	GetByID(context.Context, uuid.UUID) (*models.User, error)
+	ExistForEmail(context.Context, string) (bool, error)
 }

@@ -7,8 +7,8 @@ import (
 
 	"files-uploader/config"
 	"files-uploader/internal/db"
-	"files-uploader/internal/repository"
-	"files-uploader/internal/service"
+	filesrepository "files-uploader/internal/repository/files"
+	fileservice "files-uploader/internal/service/files"
 	"files-uploader/internal/storage"
 	"files-uploader/pkg/logger"
 	"files-uploader/worker/consumer"
@@ -37,7 +37,7 @@ func main() {
 	log.Info("connected to bucket")
 
 	db := db.NewDB()
-	repo := repository.NewSqlRepo(db)
+	repo := filesrepository.NewFilesRepository(db)
 
 	redisClient := redis.NewClient(&redis.Options{Addr: appConfig.RedisAddr})
 	stausCmd := redisClient.Ping(context.Background())
@@ -46,7 +46,7 @@ func main() {
 	}
 	slog.Info("connected to redis")
 
-	fileService := service.NewFileServices(repo, objStorage, appConfig.BucketConfig)
+	fileService := fileservice.NewFileServices(repo, objStorage, appConfig.BucketConfig)
 	redisConsumer := consumer.NewConsumer(redisClient, fileService)
 	if err := redisConsumer.Run(context.Background()); err != nil {
 		slog.Error("running worker", slog.Any("error", err))

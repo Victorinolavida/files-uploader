@@ -1,0 +1,57 @@
+{{define "auth-content"}}
+<h1>Welcome back</h1>
+<p class="sub">Log in to upload and manage your files.</p>
+
+<form id="login-form" class="auth-form" novalidate>
+    <label class="field">
+        <span>Email</span>
+        <input type="email" name="email" autocomplete="email" placeholder="you@example.com" required />
+    </label>
+
+    <label class="field">
+        <span>Password</span>
+        <input type="password" name="password" autocomplete="current-password" placeholder="••••••••" required />
+    </label>
+
+    <p id="form-error" class="form-error" hidden></p>
+
+    <button type="submit" class="btn-primary">Log in</button>
+</form>
+
+<p class="switch">No account? <a href="/register">Create one</a></p>
+
+<script>
+    const form = document.getElementById("login-form");
+    const error = document.getElementById("form-error");
+    const button = form.querySelector("button[type=submit]");
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        error.hidden = true;
+        button.disabled = true;
+
+        try {
+            const res = await fetch("/users/login", {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    email: form.email.value.trim(),
+                    password: form.password.value,
+                }),
+            });
+
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.message || "Unable to log in");
+            }
+
+            window.location.href = "/home";
+        } catch (err) {
+            error.textContent = err.message;
+            error.hidden = false;
+            button.disabled = false;
+        }
+    });
+</script>
+{{end}}

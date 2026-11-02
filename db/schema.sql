@@ -13,9 +13,17 @@ CREATE TABLE files (
 , reject_reason text, mode text NOT NULL default 'single', multipart_upload_id text, part_size int, part_count int default 1);
 CREATE INDEX idx_files_user_id ON files(user_id);
 CREATE INDEX idx_files_status ON files(status);
+CREATE TABLE users (
+    id uuid NOT NULL PRIMARY KEY,
+    email text not null unique,
+    name text CONSTRAINT chk_name CHECK (LENGTH(name) >= 3),
+    password bytea not null,
+    created_at TIMESTAMPZ not null
+);
 -- Dbmate schema migrations
 INSERT INTO "schema_migrations" (version) VALUES
   ('20261001032214'),
   ('20261001144357'),
   ('20261001180217'),
-  ('20261001191335');
+  ('20261001191335'),
+  ('20261102191536');

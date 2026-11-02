@@ -11,16 +11,16 @@ import (
 	"time"
 
 	"files-uploader/internal/dto"
+	"files-uploader/internal/http/middleware"
 	"files-uploader/internal/models"
 	"files-uploader/internal/service"
 	"files-uploader/pkg/http/response"
-
-	"github.com/google/uuid"
 )
 
 type Router struct {
-	render func(http.ResponseWriter, any)
-	serv   service.FileService
+	render   func(http.ResponseWriter, any)
+	serv     service.FileService
+	csrfName string
 }
 
 var AllowedContentTypes = []string{
@@ -48,27 +48,32 @@ var AllowedContentTypes = []string{
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
-func NewRouter(render func(http.ResponseWriter, any), serv service.FileService) http.Handler {
-	r := &Router{render, serv}
+func NewRouter(render func(http.ResponseWriter, any), serv service.FileService, csrfName string, protect, pageAuth func(http.Handler) http.Handler) http.Handler {
+	r := &Router{render, serv, csrfName}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", notFound)
-	mux.HandleFunc("/home", r.Home)
-	mux.HandleFunc("POST /uploads", r.Uploads)
-	mux.HandleFunc("POST /uploads/{id}/parts", r.UploadParts)
-	mux.HandleFunc("POST /uploads/{id}/complete", r.FileComplete)
-	mux.HandleFunc("GET /uploads/list", r.ListUploads)
+	mux.Handle("GET /home", pageAuth(http.HandlerFunc(r.Home)))
+	mux.Handle("POST /uploads", protect(http.HandlerFunc(r.Uploads)))
+	mux.Handle("POST /uploads/{id}/parts", protect(http.HandlerFunc(r.UploadParts)))
+	mux.Handle("POST /uploads/{id}/complete", protect(http.HandlerFunc(r.FileComplete)))
+	mux.Handle("GET /uploads/list", protect(http.HandlerFunc(r.ListUploads)))
 	return mux
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		http.Redirect(w, r, "/home", http.StatusSeeOther)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	response.SendError(w, "not found", http.StatusNotFound)
 }
 
 func (r *Router) Home(w http.ResponseWriter, _ *http.Request) {
 	data := map[string]any{
-		"Year": time.Now().Year(),
+		"Year":           time.Now().Year(),
+		"CSRFCookieName": r.csrfName,
 	}
 	r.render(w, data)
 }
@@ -79,9 +84,13 @@ type FileMetadata struct {
 	SizeBites   int    `json:"size_bytes"`
 }
 
-var HardcodedUser = uuid.MustParse("a5f18e36-d915-43cb-935d-cfdbcd37e62b")
-
 func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
+	userID, ok := middleware.UserID(re.Context())
+	if !ok {
+		response.SendError(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+
 	fileMetadata, err := response.ReadFromBody[FileMetadata](re)
 	if err != nil {
 		if errors.Is(err, response.ErrEmtpyBody) {
@@ -112,7 +121,7 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 	}
 
 	file, err := models.NewFile(
-		HardcodedUser,
+		userID,
 		fileMetadata.FileName,
 		fileMetadata.ContentType,
 		fileMetadata.SizeBites,
@@ -240,6 +249,11 @@ func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 		response.SendError(w, "file not found", http.StatusBadRequest)
 		return
 	}
+	userID, ok := middleware.UserID(re.Context())
+	if !ok || file.UserID != userID {
+		response.SendError(w, "file not found", http.StatusNotFound)
+		return
+	}
 	if file.Mode != string(models.MultiPart) || file.MultipartUploadID == nil || file.PartCount == 0 {
 		slog.Error("file is an invalid to use this endpoint", slog.Any("id", file.ID.String()))
 		response.SendError(w, "file not found", http.StatusConflict)
@@ -301,6 +315,11 @@ func (r *Router) FileComplete(w http.ResponseWriter, re *http.Request) {
 		response.SendError(w, "file not found", http.StatusBadRequest)
 		return
 	}
+	userID, ok := middleware.UserID(re.Context())
+	if !ok || file.UserID != userID {
+		response.SendError(w, "file not found", http.StatusNotFound)
+		return
+	}
 
 	if file.Mode != string(models.MultiPart) || file.MultipartUploadID == nil || file.PartCount == 0 {
 		slog.Error("file is an invalid to use this endpoint", slog.Any("id", file.ID.String()))
@@ -352,7 +371,13 @@ func (r *Router) FileComplete(w http.ResponseWriter, re *http.Request) {
 }
 
 func (r *Router) ListUploads(w http.ResponseWriter, re *http.Request) {
-	files, err := r.serv.ListFiles(re.Context(), HardcodedUser)
+	userID, ok := middleware.UserID(re.Context())
+	if !ok {
+		response.SendError(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+
+	files, err := r.serv.ListFiles(re.Context(), userID)
 	if err != nil {
 		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
