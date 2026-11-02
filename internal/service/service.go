@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"files-uploader/internal/jwt"
 	"files-uploader/internal/models"
 
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
@@ -22,4 +23,14 @@ type FileService interface {
 	CompleteFileUpload(context.Context, *models.File, *s3.ListPartsOutput) error
 	ListFiles(context.Context, uuid.UUID) ([]*models.File, error)
 	PresignDownload(ctx context.Context, key, fileName, contentType string) (*v4.PresignedHTTPRequest, time.Time, error)
+}
+
+type UserService interface {
+	CreateUser(context.Context, *models.User) error
+	GetUserByEmail(context.Context, string) (*models.User, error)
+}
+
+type JwtService interface {
+	jwt.TokenIssuer
+	jwt.TokenVerifier
 }

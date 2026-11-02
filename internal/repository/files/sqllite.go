@@ -1,35 +1,35 @@
-package repository
+package filesrepository
 
 import (
 	"context"
+
 	"files-uploader/internal/models"
+	"files-uploader/internal/repository"
 
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
 
-type sqlLiteRepo struct {
+type sqlLiteFilesRepo struct {
 	db *bun.DB
 }
 
-var _ FilesRepository = (*sqlLiteRepo)(nil)
-
-func NewSqlRepo(db *bun.DB) *sqlLiteRepo {
-	return &sqlLiteRepo{db}
+func NewFilesRepository(db *bun.DB) repository.FilesRepository {
+	return &sqlLiteFilesRepo{db}
 }
 
-func (repo *sqlLiteRepo) Save(ctx context.Context, f *models.File) error {
+func (repo *sqlLiteFilesRepo) Save(ctx context.Context, f *models.File) error {
 	_, err := repo.db.NewInsert().Model(f).Exec(ctx)
 	return err
 }
-func (repo *sqlLiteRepo) Delete() {}
+func (repo *sqlLiteFilesRepo) Delete() {}
 
-func (repo *sqlLiteRepo) Update(cxt context.Context, f *models.File) error {
+func (repo *sqlLiteFilesRepo) Update(cxt context.Context, f *models.File) error {
 	_, err := repo.db.NewUpdate().Model(f).WherePK().Exec(cxt)
 	return err
 }
 
-func (repo *sqlLiteRepo) FindByKey(ctx context.Context, key string) (*models.File, error) {
+func (repo *sqlLiteFilesRepo) FindByKey(ctx context.Context, key string) (*models.File, error) {
 	file := new(models.File)
 	err := repo.db.NewSelect().Model(file).Where("object_key = ?", key).Scan(ctx)
 	if err != nil {
@@ -38,7 +38,7 @@ func (repo *sqlLiteRepo) FindByKey(ctx context.Context, key string) (*models.Fil
 	return file, nil
 }
 
-func (repo *sqlLiteRepo) FindByUploadID(ctx context.Context, uploadID string) (*models.File, error) {
+func (repo *sqlLiteFilesRepo) FindByUploadID(ctx context.Context, uploadID string) (*models.File, error) {
 	file := new(models.File)
 	err := repo.db.NewSelect().Model(file).Where(" multipart_upload_id = ?", uploadID).Scan(ctx)
 	if err != nil {
@@ -47,7 +47,7 @@ func (repo *sqlLiteRepo) FindByUploadID(ctx context.Context, uploadID string) (*
 	return file, nil
 }
 
-func (repo *sqlLiteRepo) ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.File, error) {
+func (repo *sqlLiteFilesRepo) ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.File, error) {
 	files := make([]*models.File, 0)
 	err := repo.db.NewSelect().
 		Model(&files).

@@ -63,3 +63,9 @@ type FileListItem struct {
 	CreatedAt   time.Time `json:"created_at"`
 	DownloadURL string    `json:"download_url"`
 }
+
+type LoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Name     string `json:"password"`
+}

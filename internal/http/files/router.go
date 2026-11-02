@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"files-uploader/internal/dto"
 	"files-uploader/internal/models"
 	"files-uploader/internal/service"
+	"files-uploader/pkg/http/response"
 
 	"github.com/google/uuid"
 )
@@ -34,6 +36,7 @@ var AllowedContentTypes = []string{
 	"text/html",
 	"text/css",
 	"text/javascript",
+	"application/x-apple-diskimage",
 	"application/xml",
 	"application/zip",
 	"audio/mpeg",
@@ -60,7 +63,7 @@ func NewRouter(render func(http.ResponseWriter, any), serv service.FileService) 
 
 func notFound(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	SendError(w, "not found", http.StatusNotFound)
+	response.SendError(w, "not found", http.StatusNotFound)
 }
 
 func (r *Router) Home(w http.ResponseWriter, _ *http.Request) {
@@ -79,38 +82,32 @@ type FileMetadata struct {
 var HardcodedUser = uuid.MustParse("a5f18e36-d915-43cb-935d-cfdbcd37e62b")
 
 func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
-	fileMetadata := new(FileMetadata)
-
-	decoder := json.NewDecoder(re.Body)
-	defer re.Body.Close()
-
-	err := decoder.Decode(fileMetadata)
+	fileMetadata, err := response.ReadFromBody[FileMetadata](re)
 	if err != nil {
-		if err == io.EOF {
-			SendError(w, "body empty", http.StatusBadRequest)
-			return
+		if errors.Is(err, response.ErrEmtpyBody) {
+			response.SendError(w, err.Error(), http.StatusBadRequest)
 		}
-		slog.Error("error decoding body", slog.Any("error", err))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if fileMetadata.FileName == "" {
 		slog.Warn("file name is empty")
-		SendError(w, "file name is empty", http.StatusBadRequest)
+		response.SendError(w, "file name is empty", http.StatusBadRequest)
 		return
 	}
 
 	if fileMetadata.SizeBites <= 0 || fileMetadata.SizeBites > models.MaxSize {
 		slog.Warn("file size is invalid")
-		SendError(w, "file size is invalid, have size 0 or pass 4GB", http.StatusBadRequest)
+		response.SendError(w, "file size is invalid, have size 0 or pass 4GB", http.StatusBadRequest)
 		return
 	}
 
 	if !slices.Contains(AllowedContentTypes, fileMetadata.ContentType) {
 		msg := fmt.Sprintf("invalid content_type: %s", fileMetadata.ContentType)
 		slog.Warn("content_type not allowed", slog.Any("error", msg))
-		SendError(w, msg, http.StatusBadRequest)
+		response.SendError(w, msg, http.StatusBadRequest)
 		return
 	}
 
@@ -122,14 +119,14 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 	)
 	if err != nil {
 		slog.Error("invalid data", slog.Any("error", err))
-		SendError(w, err.Error(), http.StatusBadRequest)
+		response.SendError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	err = r.serv.SaveFileMetadata(re.Context(), file)
 	if err != nil {
 		slog.Error("saving file", slog.Any("error", err))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	slog.Info("success save metadata")
@@ -139,11 +136,11 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 		out, ttl, err := r.serv.PresignSingle(re.Context(), file.ObjectKey, file.ContentType, file.SizeBites)
 		if err != nil {
 			slog.Error("presign file", slog.Any("error", err))
-			SendError(w, "internal server error", http.StatusInternalServerError)
+			response.SendError(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
-		response := dto.FileSingleUploadResponse{
+		resp := dto.FileSingleUploadResponse{
 			CommonFileResponse: dto.CommonFileResponse{
 				UploadID:  file.ID.String(),
 				ExpiresAt: ttl.String(),
@@ -155,10 +152,10 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 				"Content-Type": file.ContentType,
 			},
 		}
-		resBytes, err := json.Marshal(response)
+		resBytes, err := json.Marshal(resp)
 		if err != nil {
 			slog.Error("marshaling file", slog.Any("error", err))
-			SendError(w, "internal server error", http.StatusInternalServerError)
+			response.SendError(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		w.Write(resBytes)
@@ -170,10 +167,10 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 	)
 	if err != nil {
 		slog.Error("presigning multipart file", slog.Any("error", err))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	response := dto.FileMultipleUploadResponse{
+	resp := dto.FileMultipleUploadResponse{
 		CommonFileResponse: dto.CommonFileResponse{
 			ExpiresAt: ttl.String(),
 			Mode:      file.Mode,
@@ -192,28 +189,19 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 			},
 		},
 	}
-	resBytes, err := json.Marshal(response)
+	resBytes, err := json.Marshal(resp)
 	if err != nil {
 		slog.Error("marshaling file", slog.Any("error", err))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Write(resBytes)
 }
 
-func SendError(w http.ResponseWriter, message string, status int) {
-	w.WriteHeader(status)
-	errorBody := map[string]any{
-		"message": message,
-	}
-	response, _ := json.Marshal(errorBody)
-	w.Write(response)
-}
-
 func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 	uploadID := re.PathValue("id")
 	if uploadID == "" {
-		SendError(w, "upload_id must be not empty", http.StatusBadRequest)
+		response.SendError(w, "upload_id must be not empty", http.StatusBadRequest)
 		return
 	}
 
@@ -223,25 +211,25 @@ func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 	defer re.Body.Close()
 	if err != nil {
 		if err == io.EOF {
-			SendError(w, "body empty", http.StatusBadRequest)
+			response.SendError(w, "body empty", http.StatusBadRequest)
 			return
 		}
 		slog.Error("error decoding body", slog.Any("error", err))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if len(body.PartNumbers) == 0 {
-		SendError(w, "part_numbers is empty", http.StatusBadRequest)
+		response.SendError(w, "part_numbers is empty", http.StatusBadRequest)
 		return
 	}
 	if len(body.PartNumbers) > 10 {
-		SendError(w, "part_numbers is too big", http.StatusBadRequest)
+		response.SendError(w, "part_numbers is too big", http.StatusBadRequest)
 		return
 	}
 	seen := make(map[int]bool, len(body.PartNumbers))
 	for _, n := range body.PartNumbers {
 		if n < 1 || seen[n] {
-			SendError(w, "invalid part number", http.StatusBadRequest)
+			response.SendError(w, "invalid part number", http.StatusBadRequest)
 			return
 		}
 		seen[n] = true
@@ -249,12 +237,12 @@ func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 
 	file, err := r.serv.FindFileByMultipartID(re.Context(), uploadID)
 	if err != nil {
-		SendError(w, "file not found", http.StatusBadRequest)
+		response.SendError(w, "file not found", http.StatusBadRequest)
 		return
 	}
 	if file.Mode != string(models.MultiPart) || file.MultipartUploadID == nil || file.PartCount == 0 {
 		slog.Error("file is an invalid to use this endpoint", slog.Any("id", file.ID.String()))
-		SendError(w, "file not found", http.StatusConflict)
+		response.SendError(w, "file not found", http.StatusConflict)
 		return
 	}
 
@@ -263,13 +251,13 @@ func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 			slog.Any("id", file.ID.String()),
 			slog.Any("status", file.Status),
 		)
-		SendError(w, "file is already processed", http.StatusConflict)
+		response.SendError(w, "file is already processed", http.StatusConflict)
 		return
 	}
 	for _, n := range body.PartNumbers {
 		if n > file.PartCount {
 			slog.Error("invalid part number, args is bigger thatn part_count")
-			SendError(w, "invalid part number", http.StatusBadRequest)
+			response.SendError(w, "invalid part number", http.StatusBadRequest)
 			return
 		}
 	}
@@ -277,11 +265,11 @@ func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 	output, ttl, err := r.serv.PresignPartRange(re.Context(), file.ObjectKey, *file.MultipartUploadID, body.PartNumbers)
 	if err != nil {
 		slog.Error("error presigned parts", slog.Any("error", err))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	response := dto.FilePartsResponse{
+	resp := dto.FilePartsResponse{
 		ExpiresAt: ttl.String(),
 	}
 	parts := make([]dto.FilePartResponse, len(output))
@@ -291,11 +279,11 @@ func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 			URL:        o.URL,
 		}
 	}
-	response.Parts = parts
-	responseBytes, err := json.Marshal(response)
+	resp.Parts = parts
+	responseBytes, err := json.Marshal(resp)
 	if err != nil {
 		slog.Error("marshaling reponsee ", slog.Any("error", err))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -305,29 +293,29 @@ func (r *Router) UploadParts(w http.ResponseWriter, re *http.Request) {
 func (r *Router) FileComplete(w http.ResponseWriter, re *http.Request) {
 	uploadID := re.PathValue("id")
 	if uploadID == "" {
-		SendError(w, "upload_id must be not empty", http.StatusBadRequest)
+		response.SendError(w, "upload_id must be not empty", http.StatusBadRequest)
 		return
 	}
 	file, err := r.serv.FindFileByMultipartID(re.Context(), uploadID)
 	if err != nil {
-		SendError(w, "file not found", http.StatusBadRequest)
+		response.SendError(w, "file not found", http.StatusBadRequest)
 		return
 	}
 
 	if file.Mode != string(models.MultiPart) || file.MultipartUploadID == nil || file.PartCount == 0 {
 		slog.Error("file is an invalid to use this endpoint", slog.Any("id", file.ID.String()))
-		SendError(w, "file not found", http.StatusConflict)
+		response.SendError(w, "file not found", http.StatusConflict)
 		return
 	}
 
 	parts, err := r.serv.ListAllParts(re.Context(), file.ObjectKey, *file.MultipartUploadID)
 	if err != nil {
 		slog.Error("can not list parts", slog.Any("id", file.ID.String()))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if len(parts.Parts) != file.PartCount {
-		SendError(w, "number of parts not match", http.StatusConflict)
+		response.SendError(w, "number of parts not match", http.StatusConflict)
 		return
 	}
 	size := 0
@@ -337,18 +325,18 @@ func (r *Router) FileComplete(w http.ResponseWriter, re *http.Request) {
 		partNumbers = append(partNumbers, int(*part.PartNumber))
 	}
 	if !isConsecutive(partNumbers) {
-		SendError(w, "some part is missing", http.StatusConflict)
+		response.SendError(w, "some part is missing", http.StatusConflict)
 		return
 	}
 	if size != file.SizeBites {
-		SendError(w, "file size and sum part file size does not match", http.StatusConflict)
+		response.SendError(w, "file size and sum part file size does not match", http.StatusConflict)
 		return
 	}
 
 	err = r.serv.CompleteFileUpload(re.Context(), file, parts)
 	if err != nil {
 		slog.Error("can not complete file upload", slog.Any("error", err))
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -366,7 +354,7 @@ func (r *Router) FileComplete(w http.ResponseWriter, re *http.Request) {
 func (r *Router) ListUploads(w http.ResponseWriter, re *http.Request) {
 	files, err := r.serv.ListFiles(re.Context(), HardcodedUser)
 	if err != nil {
-		SendError(w, "internal server error", http.StatusInternalServerError)
+		response.SendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 

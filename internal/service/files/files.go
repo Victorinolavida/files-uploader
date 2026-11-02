@@ -1,4 +1,4 @@
-package service
+package fileservice
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"files-uploader/config"
 	"files-uploader/internal/models"
 	"files-uploader/internal/repository"
+	"files-uploader/internal/service"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
@@ -35,7 +36,7 @@ type FileServ struct {
 	presignClient *s3.PresignClient
 }
 
-func NewFileServices(repo repository.FilesRepository, client *s3.Client, cfg config.BucketConfig) *FileServ {
+func NewFileServices(repo repository.FilesRepository, client *s3.Client, cfg config.BucketConfig) service.FileService {
 	fileServ := &FileServ{
 		repo:          repo,
 		client:        client,
@@ -44,8 +45,6 @@ func NewFileServices(repo repository.FilesRepository, client *s3.Client, cfg con
 	}
 	return fileServ
 }
-
-var _ FileService = (*FileServ)(nil)
 
 func (serv *FileServ) ProcessUpload(ctx context.Context, key string) error {
 	file, err := serv.repo.FindByKey(ctx, key)

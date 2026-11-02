@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
-	"files-uploader/config"
-	"files-uploader/internal/db"
-	appRouter "files-uploader/internal/http"
-	"files-uploader/internal/repository"
-	"files-uploader/internal/service"
-	"files-uploader/internal/storage"
-	"files-uploader/pkg/logger"
 	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"text/template"
+
+	"files-uploader/config"
+	"files-uploader/internal/db"
+	appRouter "files-uploader/internal/http/files"
+	filesrepository "files-uploader/internal/repository/files"
+	fileservice "files-uploader/internal/service/files"
+	"files-uploader/internal/storage"
+	"files-uploader/pkg/logger"
 )
 
 func render(w http.ResponseWriter, data any) {
@@ -26,7 +27,6 @@ func render(w http.ResponseWriter, data any) {
 }
 
 func main() {
-
 	appConfig, err := config.Load()
 	if err != nil {
 		log.Panicf("error loading config")
@@ -34,7 +34,6 @@ func main() {
 
 	log := logger.NewLogger(appConfig.AppEnv)
 	cfg, err := storage.LoadConfig(context.Background(), appConfig.AppEnv, appConfig.BucketConfig)
-
 	if err != nil {
 		log.Error("unable to load SDK config", slog.Any("error", err))
 		panic(1)
@@ -47,11 +46,10 @@ func main() {
 	}
 
 	db := db.NewDB()
-	repo := repository.NewSqlRepo(db)
-
+	repo := filesrepository.NewFilesRepository(db)
 	mux := http.NewServeMux()
 
-	fileService := service.NewFileServices(repo, objStorage, appConfig.BucketConfig)
+	fileService := fileservice.NewFileServices(repo, objStorage, appConfig.BucketConfig)
 	handler := appRouter.NewRouter(render, fileService)
 	mux.Handle("/", handler)
 
@@ -60,5 +58,4 @@ func main() {
 		log.Error("error starting server", slog.Any("error", err))
 		panic(1)
 	}
-
 }
