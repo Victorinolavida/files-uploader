@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"files-uploader/internal/dto"
+	"files-uploader/internal/events"
 	"files-uploader/internal/http/middleware"
 	"files-uploader/internal/models"
 	"files-uploader/internal/service"
@@ -20,6 +22,7 @@ import (
 type Router struct {
 	render   func(http.ResponseWriter, any)
 	serv     service.FileService
+	hub      *events.Hub
 	csrfName string
 }
 
@@ -48,8 +51,8 @@ var AllowedContentTypes = []string{
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
-func NewRouter(render func(http.ResponseWriter, any), serv service.FileService, csrfName string, protect, pageAuth func(http.Handler) http.Handler) http.Handler {
-	r := &Router{render, serv, csrfName}
+func NewRouter(render func(http.ResponseWriter, any), serv service.FileService, hub *events.Hub, csrfName string, protect, pageAuth func(http.Handler) http.Handler) http.Handler {
+	r := &Router{render, serv, hub, csrfName}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", notFound)
@@ -58,6 +61,7 @@ func NewRouter(render func(http.ResponseWriter, any), serv service.FileService, 
 	mux.Handle("POST /uploads/{id}/parts", protect(http.HandlerFunc(r.UploadParts)))
 	mux.Handle("POST /uploads/{id}/complete", protect(http.HandlerFunc(r.FileComplete)))
 	mux.Handle("GET /uploads/list", protect(http.HandlerFunc(r.ListUploads)))
+	mux.Handle("GET /uploads/events", protect(http.HandlerFunc(r.UploadEvents)))
 	return mux
 }
 
@@ -385,25 +389,123 @@ func (r *Router) ListUploads(w http.ResponseWriter, re *http.Request) {
 
 	resp := make([]dto.FileListItem, 0, len(files))
 	for _, f := range files {
-		presign, _, err := r.serv.PresignDownload(re.Context(), f.ObjectKey, f.FileName, f.ContentType)
+		item, err := r.fileListItem(re.Context(), f)
 		if err != nil {
 			slog.Error("presign download", slog.Any("error", err))
 			continue
 		}
-		resp = append(resp, dto.FileListItem{
-			ID:          f.ID.String(),
-			Name:        f.FileName,
-			Size:        f.SizeBites,
-			ContentType: f.ContentType,
-			CreatedAt:   f.CreatedAt,
-			DownloadURL: presign.URL,
-		})
+		resp = append(resp, item)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	resBytes, _ := json.Marshal(resp)
 	w.WriteHeader(http.StatusOK)
 	w.Write(resBytes)
+}
+
+func (r *Router) UploadEvents(w http.ResponseWriter, re *http.Request) {
+	userID, ok := middleware.UserID(re.Context())
+	if !ok {
+		response.SendError(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		response.SendError(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := re.Context()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	var updates <-chan events.UploadedEvent
+	unsubscribe := func() {}
+	if r.hub != nil {
+		updates, unsubscribe = r.hub.Subscribe(userID.String())
+	}
+	defer unsubscribe()
+
+	seen := make(map[string]struct{})
+	snapshot := make([]dto.FileListItem, 0)
+	files, err := r.serv.ListFiles(ctx, userID)
+	if err != nil {
+		slog.Error("list files for events", slog.Any("error", err))
+	} else {
+		snapshot = make([]dto.FileListItem, 0, len(files))
+		for _, f := range files {
+			item, err := r.fileListItem(ctx, f)
+			if err != nil {
+				slog.Error("presign download for events", slog.Any("error", err))
+				continue
+			}
+			snapshot = append(snapshot, item)
+			seen[f.ID.String()] = struct{}{}
+		}
+	}
+
+	if data, err := json.Marshal(snapshot); err == nil {
+		fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data)
+	}
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		case ev := <-updates:
+			if _, ok := seen[ev.FileID]; ok {
+				continue
+			}
+			seen[ev.FileID] = struct{}{}
+
+			presign, _, err := r.serv.PresignDownload(ctx, ev.ObjectKey, ev.Name, ev.ContentType)
+			if err != nil {
+				slog.Error("presign download for event", slog.Any("error", err))
+				continue
+			}
+
+			item := dto.FileListItem{
+				ID:          ev.FileID,
+				Name:        ev.Name,
+				Size:        ev.Size,
+				ContentType: ev.ContentType,
+				CreatedAt:   ev.CreatedAt,
+				DownloadURL: presign.URL,
+			}
+			data, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: file\ndata: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+}
+
+func (r *Router) fileListItem(ctx context.Context, f *models.File) (dto.FileListItem, error) {
+	presign, _, err := r.serv.PresignDownload(ctx, f.ObjectKey, f.FileName, f.ContentType)
+	if err != nil {
+		return dto.FileListItem{}, err
+	}
+	return dto.FileListItem{
+		ID:          f.ID.String(),
+		Name:        f.FileName,
+		Size:        f.SizeBites,
+		ContentType: f.ContentType,
+		CreatedAt:   f.CreatedAt,
+		DownloadURL: presign.URL,
+	}, nil
 }
 
 func isConsecutive(nums []int) bool {

@@ -13,7 +13,7 @@ import (
 )
 
 type FileService interface {
-	ProcessUpload(ctx context.Context, key string) error
+	ProcessUpload(ctx context.Context, key string) (*models.File, error)
 	SaveFileMetadata(ctx context.Context, file *models.File) error
 	PresignSingle(ctx context.Context, key, contentType string, size int) (*v4.PresignedHTTPRequest, time.Time, error)
 	PresignMultipart(ctx context.Context, file *models.File) (*v4.PresignedHTTPRequest, time.Time, error)

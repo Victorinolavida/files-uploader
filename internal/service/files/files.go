@@ -46,17 +46,17 @@ func NewFileServices(repo repository.FilesRepository, client *s3.Client, cfg con
 	return fileServ
 }
 
-func (serv *FileServ) ProcessUpload(ctx context.Context, key string) error {
+func (serv *FileServ) ProcessUpload(ctx context.Context, key string) (*models.File, error) {
 	file, err := serv.repo.FindByKey(ctx, key)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if file.Mode == string(models.SinglePart) && !slices.Contains(validStatus, file.Status) {
-		return errors.New("file is already processed or rejected")
+		return nil, errors.New("file is already processed or rejected")
 	}
 
 	if file.Mode == string(models.MultiPart) && !slices.Contains(validStatusMultipart, file.Status) {
-		return errors.New("file is already processed or rejected")
+		return nil, errors.New("file is already processed or rejected")
 	}
 
 	head, err := serv.client.HeadObject(
@@ -64,13 +64,13 @@ func (serv *FileServ) ProcessUpload(ctx context.Context, key string) error {
 		&s3.HeadObjectInput{Bucket: aws.String(serv.bucket), Key: aws.String(key)},
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// validate that size in s3 and db are the ame
 	if *head.ContentLength != int64(file.SizeBites) || *head.ContentLength > models.MaxSize {
 		file.Reject("size mistmatch")
-		return serv.reject(ctx, file)
+		return nil, serv.reject(ctx, file)
 	}
 
 	// TODO: analize file for malware
@@ -85,22 +85,22 @@ func (serv *FileServ) ProcessUpload(ctx context.Context, key string) error {
 	})
 	if err != nil {
 		file.Reject("unable to upload file")
-		return serv.reject(ctx, file)
+		return nil, serv.reject(ctx, file)
 	}
 
 	if err := serv.repo.Update(ctx, file); err != nil {
-		return err
+		return nil, err
 	}
 	_, err = serv.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(serv.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return err
+		slog.Error("unable to delete quarantine object", slog.Any("error", err))
 	}
 
 	slog.Info("file successfully updated")
-	return nil
+	return file, nil
 }
 
 func (serv *FileServ) reject(ctx context.Context, file *models.File) error {

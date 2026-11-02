@@ -12,6 +12,7 @@ import (
 
 	"files-uploader/config"
 	"files-uploader/internal/db"
+	"files-uploader/internal/events"
 	appRouter "files-uploader/internal/http/files"
 	"files-uploader/internal/http/middleware"
 	"files-uploader/internal/http/users"
@@ -22,6 +23,8 @@ import (
 	usersservice "files-uploader/internal/service/users"
 	"files-uploader/internal/storage"
 	"files-uploader/pkg/logger"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func render(w http.ResponseWriter, data any) {
@@ -67,6 +70,17 @@ func main() {
 	userRepo := userrepository.NewUserRepo(db)
 	mux := http.NewServeMux()
 
+	redisClient := redis.NewClient(&redis.Options{Addr: appConfig.RedisAddr})
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		log.Error("unable to connect redis", slog.Any("error", err))
+	}
+	hub := events.NewHub(redisClient)
+	go func() {
+		if err := hub.Run(context.Background()); err != nil {
+			log.Error("upload events hub stopped", slog.Any("error", err))
+		}
+	}()
+
 	fileService := fileservice.NewFileServices(repo, objStorage, appConfig.BucketConfig)
 	tokenService, err := jwt.NewService(appConfig.TokenConfig)
 	if err != nil {
@@ -76,7 +90,7 @@ func main() {
 	userService := usersservice.NewUserService(userRepo, tokenService)
 	protect := middleware.Protect(tokenService, appConfig.CookieConfig)
 	pageAuth := middleware.RequirePageAuth(tokenService, appConfig.CookieConfig.Name, "/register")
-	handler := appRouter.NewRouter(render, fileService, appConfig.CookieConfig.CSRFName, protect, pageAuth)
+	handler := appRouter.NewRouter(render, fileService, hub, appConfig.CookieConfig.CSRFName, protect, pageAuth)
 	userHandler := users.NewRouter(render, userService, appConfig.CookieConfig, protect)
 	mux.Handle("/", handler)
 	mux.Handle("/users/", http.StripPrefix("/users", userHandler))

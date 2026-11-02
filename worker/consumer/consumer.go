@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"files-uploader/internal/events"
 	"files-uploader/internal/service"
 	"fmt"
 	"log/slog"
@@ -73,8 +74,25 @@ func (w *Consumer) handle(ctx context.Context, raw string) error {
 			if err != nil {
 				return err
 			}
-			if err := w.service.ProcessUpload(ctx, key); err != nil {
+			file, err := w.service.ProcessUpload(ctx, key)
+			if err != nil {
 				return err
+			}
+			if file == nil {
+				continue
+			}
+
+			ev := events.UploadedEvent{
+				UserID:      file.UserID.String(),
+				FileID:      file.ID.String(),
+				ObjectKey:   file.ObjectKey,
+				Name:        file.FileName,
+				Size:        file.SizeBites,
+				ContentType: file.ContentType,
+				CreatedAt:   file.CreatedAt,
+			}
+			if err := events.PublishUploaded(ctx, w.rdb, ev); err != nil {
+				slog.Error("unable to publish upload event", slog.Any("error", err))
 			}
 		}
 	}

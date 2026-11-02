@@ -630,6 +630,7 @@
       const MAX_RETRIES = 3;
 
       const filesState = new Map();
+      const remoteIds = new Set();
       let uploading = false;
 
       function csrfToken() {
@@ -903,27 +904,10 @@
         }
       });
 
-      async function loadFiles() {
-        $refresh.disabled = true;
-        try {
-          const res = await fetch(`${BACKEND_URL}/uploads/list`, {
-            credentials: "include",
-          });
-          if (res.status === 401) {
-            window.location.href = "/register";
-            return;
-          }
-          if (!res.ok) throw new Error("request failed");
-          const files = await res.json();
-
-          $remoteList.innerHTML = "";
-          $remoteEmpty.hidden = files.length > 0;
-          $remoteEmpty.textContent = "No uploaded files yet.";
-
-          files.forEach((file) => {
-            const item = document.createElement("li");
-            item.className = "file-item";
-            item.innerHTML = `
+      function remoteFileElement(file) {
+        const item = document.createElement("li");
+        item.className = "file-item";
+        item.innerHTML = `
                     <span class="file-icon" aria-hidden="true">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -939,15 +923,76 @@
                     </div>
                     <a class="btn btn-primary download" href="${escapeHtml(file.download_url)}" target="_blank" rel="noopener">Download</a>
                 `;
-            $remoteList.appendChild(item);
+        return item;
+      }
+
+      function addRemoteFile(file, prepend = false) {
+        if (!file || !file.id || remoteIds.has(file.id)) return;
+        remoteIds.add(file.id);
+        $remoteEmpty.hidden = true;
+        const item = remoteFileElement(file);
+        if (prepend) {
+          $remoteList.prepend(item);
+        } else {
+          $remoteList.appendChild(item);
+        }
+      }
+
+      async function loadFiles() {
+        $refresh.disabled = true;
+        try {
+          const res = await fetch(`${BACKEND_URL}/uploads/list`, {
+            credentials: "include",
           });
+          if (res.status === 401) {
+            window.location.href = "/register";
+            return;
+          }
+          if (!res.ok) throw new Error("request failed");
+          const files = await res.json();
+
+          $remoteList.innerHTML = "";
+          remoteIds.clear();
+          $remoteEmpty.hidden = files.length > 0;
+          $remoteEmpty.textContent = "No uploaded files yet.";
+
+          files.forEach((file) => addRemoteFile(file));
         } catch {
           $remoteList.innerHTML = "";
+          remoteIds.clear();
           $remoteEmpty.hidden = false;
           $remoteEmpty.textContent = "Unable to load files.";
         } finally {
           $refresh.disabled = false;
         }
+      }
+
+      function connectEvents() {
+        const source = new EventSource(`${BACKEND_URL}/uploads/events`);
+        source.addEventListener("snapshot", (event) => {
+          try {
+            const files = JSON.parse(event.data) || [];
+            $remoteList.innerHTML = "";
+            remoteIds.clear();
+            $remoteEmpty.hidden = files.length > 0;
+            $remoteEmpty.textContent = "No uploaded files yet.";
+            files.forEach((file) => addRemoteFile(file));
+          } catch {
+            // ignore malformed snapshots
+          }
+        });
+        source.addEventListener("file", (event) => {
+          try {
+            addRemoteFile(JSON.parse(event.data), true);
+          } catch {
+            // ignore malformed events
+          }
+        });
+        source.addEventListener("error", () => {
+          if (source.readyState === EventSource.CLOSED) {
+            setTimeout(connectEvents, 5000);
+          }
+        });
       }
 
       $refresh.addEventListener("click", loadFiles);
@@ -1034,6 +1079,7 @@
 
       loadUser();
       loadFiles();
+      connectEvents();
     </script>
   </body>
 </html>
