@@ -1,5 +1,7 @@
 package dto
 
+import "time"
+
 type CommonFileResponse struct {
 	UploadID  string `json:"upload_id"`
 	Mode      string `json:"mode"`
@@ -51,4 +53,13 @@ type FileCompleteRequest struct {
 type FileCompletedResponse struct {
 	UploadID string `json:"upload_id"`
 	Status   string `json:"status"`
+}
+
+type FileListItem struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Size        int       `json:"size"`
+	ContentType string    `json:"content_type"`
+	CreatedAt   time.Time `json:"created_at"`
+	DownloadURL string    `json:"download_url"`
 }

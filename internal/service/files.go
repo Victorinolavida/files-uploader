@@ -3,19 +3,21 @@ package service
 import (
 	"context"
 	"errors"
-	"files-uploader/config"
-	"files-uploader/internal/models"
-	"files-uploader/internal/repository"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"slices"
 	"time"
 
+	"files-uploader/config"
+	"files-uploader/internal/models"
+	"files-uploader/internal/repository"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/google/uuid"
 )
 
 var validStatus = []string{
@@ -72,7 +74,7 @@ func (serv *FileServ) ProcessUpload(ctx context.Context, key string) error {
 		return serv.reject(ctx, file)
 	}
 
-	//TODO: analize file for malware
+	// TODO: analize file for malware
 
 	// promote file, set as upload
 	// set as updated and update the obj key
@@ -131,7 +133,6 @@ func (serv *FileServ) SaveFileMetadata(ctx context.Context, file *models.File) e
 }
 
 func (serv *FileServ) PresignMultipart(ctx context.Context, file *models.File) (*v4.PresignedHTTPRequest, time.Time, error) {
-
 	ttl := 1 * time.Hour
 	out, err := serv.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket:      aws.String(serv.bucket),
@@ -162,7 +163,6 @@ func (serv *FileServ) PresignMultipart(ctx context.Context, file *models.File) (
 		},
 	)
 	return request, time.Now().Add(ttl), err
-
 }
 
 func (serv *FileServ) PresignSingle(ctx context.Context, key, contentType string, size int) (*v4.PresignedHTTPRequest, time.Time, error) {
@@ -206,7 +206,6 @@ func (serv *FileServ) ListAllParts(ctx context.Context, key, uploadID string) (*
 		Key:      aws.String(key),
 		UploadId: aws.String(uploadID),
 	})
-
 }
 
 func (serv *FileServ) CompleteFileUpload(ctx context.Context, file *models.File, parst *s3.ListPartsOutput) error {
@@ -232,4 +231,19 @@ func (serv *FileServ) CompleteFileUpload(ctx context.Context, file *models.File,
 	})
 
 	return err
+}
+
+func (serv *FileServ) ListFiles(ctx context.Context, userID uuid.UUID) ([]*models.File, error) {
+	return serv.repo.ListByUser(ctx, userID)
+}
+
+func (serv *FileServ) PresignDownload(ctx context.Context, key, fileName, contentType string) (*v4.PresignedHTTPRequest, time.Time, error) {
+	ttl := 15 * time.Minute
+	req, err := serv.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket:                     aws.String(serv.bucket),
+		Key:                        aws.String(key),
+		ResponseContentType:        aws.String(contentType),
+		ResponseContentDisposition: aws.String(fmt.Sprintf("attachment; filename=%q", fileName)),
+	}, s3.WithPresignExpires(ttl))
+	return req, time.Now().Add(ttl), err
 }

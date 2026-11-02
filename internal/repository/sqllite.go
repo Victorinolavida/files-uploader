@@ -4,6 +4,7 @@ import (
 	"context"
 	"files-uploader/internal/models"
 
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 )
 
@@ -44,4 +45,18 @@ func (repo *sqlLiteRepo) FindByUploadID(ctx context.Context, uploadID string) (*
 		return nil, err
 	}
 	return file, nil
+}
+
+func (repo *sqlLiteRepo) ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.File, error) {
+	files := make([]*models.File, 0)
+	err := repo.db.NewSelect().
+		Model(&files).
+		Where("user_id = ?", userID).
+		Where("status = ?", string(models.Uploaded)).
+		OrderExpr("created_at DESC").
+		Scan(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
 }

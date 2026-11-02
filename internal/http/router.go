@@ -2,15 +2,16 @@ package http
 
 import (
 	"encoding/json"
-	"files-uploader/internal/dto"
-	"files-uploader/internal/models"
-	"files-uploader/internal/service"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"slices"
 	"time"
+
+	"files-uploader/internal/dto"
+	"files-uploader/internal/models"
+	"files-uploader/internal/service"
 
 	"github.com/google/uuid"
 )
@@ -53,6 +54,7 @@ func NewRouter(render func(http.ResponseWriter, any), serv service.FileService) 
 	mux.HandleFunc("POST /uploads", r.Uploads)
 	mux.HandleFunc("POST /uploads/{id}/parts", r.UploadParts)
 	mux.HandleFunc("POST /uploads/{id}/complete", r.FileComplete)
+	mux.HandleFunc("GET /uploads/list", r.ListUploads)
 	return mux
 }
 
@@ -63,9 +65,7 @@ func notFound(w http.ResponseWriter, r *http.Request) {
 
 func (r *Router) Home(w http.ResponseWriter, _ *http.Request) {
 	data := map[string]any{
-		"Title": "Anasayfa",
-		"User":  "Uygar",
-		"Year":  time.Now().Year(),
+		"Year": time.Now().Year(),
 	}
 	r.render(w, data)
 }
@@ -79,7 +79,6 @@ type FileMetadata struct {
 var HardcodedUser = uuid.MustParse("a5f18e36-d915-43cb-935d-cfdbcd37e62b")
 
 func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
-
 	fileMetadata := new(FileMetadata)
 
 	decoder := json.NewDecoder(re.Body)
@@ -169,7 +168,6 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 	out, ttl, err := r.serv.PresignMultipart(
 		re.Context(), file,
 	)
-
 	if err != nil {
 		slog.Error("presigning multipart file", slog.Any("error", err))
 		SendError(w, "internal server error", http.StatusInternalServerError)
@@ -184,7 +182,7 @@ func (r *Router) Uploads(w http.ResponseWriter, re *http.Request) {
 		PartCount: file.PartCount,
 		PartSize:  file.PartSize,
 		Parts: []dto.FileMultipleUploadPart{
-			dto.FileMultipleUploadPart{
+			{
 				PartNumber: 1,
 				Method:     out.Method,
 				URL:        out.URL,
@@ -363,7 +361,36 @@ func (r *Router) FileComplete(w http.ResponseWriter, re *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write(resBytes)
+}
 
+func (r *Router) ListUploads(w http.ResponseWriter, re *http.Request) {
+	files, err := r.serv.ListFiles(re.Context(), HardcodedUser)
+	if err != nil {
+		SendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]dto.FileListItem, 0, len(files))
+	for _, f := range files {
+		presign, _, err := r.serv.PresignDownload(re.Context(), f.ObjectKey, f.FileName, f.ContentType)
+		if err != nil {
+			slog.Error("presign download", slog.Any("error", err))
+			continue
+		}
+		resp = append(resp, dto.FileListItem{
+			ID:          f.ID.String(),
+			Name:        f.FileName,
+			Size:        f.SizeBites,
+			ContentType: f.ContentType,
+			CreatedAt:   f.CreatedAt,
+			DownloadURL: presign.URL,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	resBytes, _ := json.Marshal(resp)
+	w.WriteHeader(http.StatusOK)
+	w.Write(resBytes)
 }
 
 func isConsecutive(nums []int) bool {
