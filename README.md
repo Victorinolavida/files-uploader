@@ -5,10 +5,6 @@ S3 multipart uploads (presigned URLs), stores file metadata in SQLite, and uses
 MinIO event notifications delivered through Redis to process/validate uploaded
 objects in a background worker.
 
-## Demo
-
-Demo video coming soon.
-
 ## Technologies
 
 - [Go](https://go.dev/) 1.26+
