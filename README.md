@@ -7,7 +7,7 @@ objects in a background worker.
 
 ## Demo
 
-[Watch the demo video](docs/demo.mov).
+Demo video coming soon.
 
 ## Technologies
 
